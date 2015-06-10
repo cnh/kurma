@@ -5,15 +5,11 @@ package init
 import (
 	"encoding/json"
 	"fmt"
-	"io"
 	"net"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"syscall"
 
-	"github.com/apcera/util/tarhelper"
-	"github.com/appc/spec/schema"
 	"github.com/vishvananda/netlink"
 )
 
@@ -118,35 +114,6 @@ func (r *runner) handleSIGCHLD(ch chan os.Signal) {
 				break
 			}
 		}
-	}
-}
-
-// findManifest retrieves the manifest from the provided reader and unmarshals
-// it.
-func findManifest(r io.Reader) (*schema.ImageManifest, error) {
-	arch, err := tarhelper.DetectArchiveCompression(r)
-	if err != nil {
-		return nil, err
-	}
-
-	for {
-		header, err := arch.Next()
-		if err == io.EOF {
-			return nil, fmt.Errorf("failed to locate manifest file")
-		}
-		if err != nil {
-			return nil, err
-		}
-
-		if filepath.Clean(header.Name) != "manifest" {
-			continue
-		}
-
-		var manifest *schema.ImageManifest
-		if err := json.NewDecoder(arch).Decode(&manifest); err != nil {
-			return nil, err
-		}
-		return manifest, nil
 	}
 }
 

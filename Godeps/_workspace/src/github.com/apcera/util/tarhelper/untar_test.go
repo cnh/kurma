@@ -452,3 +452,89 @@ func TestCannotDetectCompression(t *testing.T) {
 
 	TestExpectError(t, u.Extract())
 }
+
+func TestUntarWhitelist(t *testing.T) {
+	StartTest(t)
+	defer FinishTest(t)
+
+	// create a buffer and tar.Writer
+	buffer := bytes.NewBufferString("")
+	archive := tar.NewWriter(buffer)
+
+	writeDirectory := func(name string) {
+		header := new(tar.Header)
+		header.Name = name + "/"
+		header.Typeflag = tar.TypeDir
+		header.Mode = 0755
+		header.Mode |= c_ISDIR
+		header.ModTime = time.Now()
+		TestExpectSuccess(t, archive.WriteHeader(header))
+	}
+
+	writeFile := func(name, contents string) {
+		b := []byte(contents)
+		header := new(tar.Header)
+		header.Name = name
+		header.Typeflag = tar.TypeReg
+		header.Mode = 0644
+		header.Mode |= c_ISREG
+		header.ModTime = time.Now()
+		header.Size = int64(len(b))
+
+		TestExpectSuccess(t, archive.WriteHeader(header))
+		_, err := archive.Write(b)
+		TestExpectSuccess(t, err)
+		TestExpectSuccess(t, archive.Flush())
+	}
+
+	writeDirectory(".")
+	writeFile("./foo", "foo")
+	writeFile("./foobar", "foobar")
+	writeFile("./doesntexist", "foo")
+	writeDirectory("./usr")
+	writeDirectory("./usr/bin")
+	writeFile("./usr/bin/bash", "bash")
+	writeDirectory("./usr/bin/other")
+	writeFile("./usr/bin/other/sh", "sh")
+	writeDirectory("./usr/nope")
+	writeFile("./usr/nope/not", "notthere")
+	writeDirectory("./usr/justdir")
+	writeFile("./usr/justdir/not", "notthere")
+	writeDirectory("./etc")
+	writeFile("./etc/not", "notthere")
+
+	archive.Close()
+
+	// create temp folder to extract to
+	tempDir := TempDir(t)
+
+	// extract
+	r := bytes.NewReader(buffer.Bytes())
+	u := NewUntar(r, tempDir)
+	u.PathWhitelist = []string{
+		"/foo",
+		"/usr/bin/",
+		"/usr/justdir",
+	}
+	TestExpectSuccess(t, u.Extract())
+
+	fileExists := func(name string) {
+		_, err := os.Stat(path.Join(tempDir, name))
+		TestExpectSuccess(t, err)
+	}
+
+	fileNotExists := func(name string) {
+		_, err := os.Stat(path.Join(tempDir, name))
+		TestExpectError(t, err)
+	}
+
+	fileExists("/foo")
+	fileExists("/usr/bin/bash")
+	fileExists("/usr/bin/other/sh")
+	fileExists("/usr/justdir")
+	fileNotExists("/foobar")
+	fileNotExists("/doesntexist")
+	fileNotExists("/usr/nope/not")
+	fileNotExists("/usr/justdir/not")
+	fileNotExists("/etc/not")
+}

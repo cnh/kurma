@@ -19,6 +19,7 @@ import (
 	"github.com/apcera/kurma/stage1/container"
 	"github.com/apcera/kurma/stage1/server"
 	"github.com/apcera/kurma/util"
+	"github.com/apcera/kurma/util/tar"
 	"github.com/apcera/logray"
 	"github.com/apcera/util/aciremote"
 	"github.com/apcera/util/proc"
@@ -495,7 +496,7 @@ func (r *runner) startInitContainers() error {
 			}
 			defer f.Close()
 
-			manifest, err := findManifest(f)
+			manifest, err := tar.FindManifest(f)
 			if err != nil {
 				r.log.Errorf("Failed to find manifest in image %q: %v", img, err)
 				return
@@ -530,7 +531,7 @@ func (r *runner) startUdev() error {
 	}
 	defer f.Close()
 
-	manifest, err := findManifest(f)
+	manifest, err := tar.FindManifest(f)
 	if err != nil {
 		r.log.Errorf("Failed to find manifest in udev image: %v", err)
 		return nil
@@ -574,7 +575,7 @@ func (r *runner) startNTP() error {
 	}
 	defer f.Close()
 
-	manifest, err := findManifest(f)
+	manifest, err := tar.FindManifest(f)
 	if err != nil {
 		r.log.Errorf("Failed to find manifest in console image: %v", err)
 		return nil
@@ -611,7 +612,7 @@ func (r *runner) startConsole() error {
 	}
 	defer f.Close()
 
-	manifest, err := findManifest(f)
+	manifest, err := tar.FindManifest(f)
 	if err != nil {
 		r.log.Errorf("Failed to find manifest in console image: %v", err)
 		return nil

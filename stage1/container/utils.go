@@ -4,12 +4,19 @@ package container
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"syscall"
 
+	"github.com/apcera/kurma/util/tar"
+	"github.com/apcera/util/aciremote"
+	"github.com/apcera/util/hashutil"
 	"github.com/apcera/util/proc"
+	"github.com/apcera/util/tarhelper"
+	"github.com/appc/spec/discovery"
+	"github.com/appc/spec/schema"
 )
 
 func (c *Container) imageManifestPath() string {
@@ -224,4 +231,120 @@ func (c *Container) resolveSymlinkDir(name string) (string, error) {
 	}
 
 	return filepath.Join(root, containerPath), nil
+}
+
+// processDependencies takes an ImageManifest and will look over its
+// dependencies, discovering them, downloading them, and applying them to the
+// current container's filesystem. This is done depth first, so the lowest
+// dependency will get resolved and extracted before higher up ones. It will
+// return any error if locating, retrieving, or extracting any dependencies
+// fails.
+func (c *Container) processDependencies(image *schema.ImageManifest, resolvedList map[string]bool) error {
+	for _, dep := range image.Dependencies {
+		// Check to see if the mentioned dependency has already been resolved. This
+		// is currently based upon the base name only. Circular dependency handling
+		// isn't called out in the AppC spec, and generally most of the edge cases
+		// you can get with this are around nefarious uses. App name should be safe
+		// enough, and not erroring but just continuing handles base cases where it
+		// actually is used and ok.
+		if resolvedList[dep.ImageName.String()] {
+			continue
+		}
+
+		app, err := discovery.NewApp(dep.ImageName.String(), dep.Labels.ToMap())
+		if err != nil {
+			return err
+		}
+
+		endpoints, _, err := discovery.DiscoverEndpoints(*app, true)
+		if err != nil {
+			return err
+		}
+
+		if len(endpoints.ACIEndpoints) == 0 {
+			return fmt.Errorf("failed to locate any endpoints for %q", dep.ImageName.String())
+		}
+
+		for _, endpoint := range endpoints.ACIEndpoints {
+			// FIXME handle signature too
+			reader, err := aciremote.RetrieveImage(endpoint.ACI, true)
+			if err != nil {
+				continue
+			}
+
+			// extract the ImageManifest from it
+			depImage, err := tar.FindManifest(reader)
+			if err != nil {
+				return err
+			}
+			if _, err := reader.Seek(0, 0); err != nil {
+				return err
+			}
+
+			// We have downloaded and extracted the manifest, count it as resolved
+			resolvedList[dep.ImageName.String()] = true
+
+			// Process the dependencies on the child image as well.
+			if err := c.processDependencies(depImage, resolvedList); err != nil {
+				return err
+			}
+
+			// Extract the image and calculate its sha.
+			sr := hashutil.NewSha512(reader)
+			if err := c.extractImage(depImage, sr); err != nil {
+				return err
+			}
+
+			// Compare the hash in the ImageID, if one was provided.
+			if dep.ImageID != nil {
+				if dep.ImageID.Val != sr.Sha512() {
+					return fmt.Errorf("download image hash did not match the provided hash: %s != %s", dep.ImageID.Val, sr.Sha512())
+				}
+			}
+
+			break
+		}
+	}
+	return nil
+}
+
+// extractImage handles extracting the tarball from the provided reader. It will
+// honor any PathWhitelist settings on the image manifest when applying to the
+// current container's filesystem. This helper is used both to extract the
+// actual container image's filesystem, as well as is used to handle extracting
+// dependent images.
+func (c *Container) extractImage(image *schema.ImageManifest, reader io.ReadCloser) error {
+	defer reader.Close()
+
+	whitelist := image.PathWhitelist
+	if len(whitelist) == 0 {
+		whitelist = []string{"/rootfs/"}
+	} else {
+		for i := range whitelist {
+			whitelist[i] = filepath.Join("/rootfs", whitelist[i])
+		}
+	}
+
+	// untar the file
+	tarfile := tarhelper.NewUntar(reader, c.directory)
+	tarfile.PreserveOwners = true
+	tarfile.PreservePermissions = true
+	tarfile.Compression = tarhelper.DETECT
+	tarfile.AbsoluteRoot = c.directory
+	tarfile.PathWhitelist = whitelist
+	if err := tarfile.Extract(); err != nil {
+		return fmt.Errorf("failed to extract stage2 image filesystem: %v", err)
+	}
+
+	// // put the hash on the pod manifest
+	// for i, app := range c.pod.Apps {
+	// 	if app.Image.Name.Equals(c.image.Name) {
+	// 		if err := app.Image.ID.Set(fmt.Sprintf("sha512-%s", sr.Sha512())); err != nil {
+	// 			return err
+	// 		}
+	// 		c.pod.Apps[i] = app
+	// 	}
+	// }
+
+	return nil
 }

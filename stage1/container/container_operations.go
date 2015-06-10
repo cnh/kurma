@@ -15,7 +15,6 @@ import (
 	"github.com/apcera/kurma/stage3/client"
 	"github.com/apcera/util/envmap"
 	"github.com/apcera/util/hashutil"
-	"github.com/apcera/util/tarhelper"
 	"github.com/appc/spec/schema"
 	"github.com/appc/spec/schema/types"
 )
@@ -76,23 +75,19 @@ func (c *Container) startingFilesystem() error {
 		c.log.Error("Initial image filesystem is nil")
 		return fmt.Errorf("initial image filesystem is nil")
 	}
+	defer func() { c.initialImageFile = nil }()
 
-	defer func() {
-		c.initialImageFile.Close()
-		c.initialImageFile = nil
-	}()
+	// Process dependencies in the image before the image contents itself.
+	if err := c.processDependencies(c.image, map[string]bool{c.image.Name.String(): true}); err != nil {
+		return err
+	}
 
 	// handle reading the sha
 	sr := hashutil.NewSha512(c.initialImageFile)
 
-	// untar the file
-	tarfile := tarhelper.NewUntar(sr, filepath.Join(c.directory))
-	tarfile.PreserveOwners = true
-	tarfile.PreservePermissions = true
-	tarfile.Compression = tarhelper.DETECT
-	tarfile.AbsoluteRoot = c.directory
-	if err := tarfile.Extract(); err != nil {
-		return fmt.Errorf("failed to extract stage2 image filesystem: %v", err)
+	// Extract the image and also process down any images in the dependency tree.
+	if err := c.extractImage(c.image, sr); err != nil {
+		return err
 	}
 
 	// put the hash on the pod manifest
